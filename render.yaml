@@ -2,114 +2,32 @@ services:
   - type: web
     name: discord-ai-council
     runtime: docker
+    plan: free
     dockerfilePath: ./Dockerfile
-    dockerContext: .
     healthCheckPath: /health
     envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: discord-ai-db
           property: connectionString
       - key: PGSSL
         value: "true"
-      - key: DISCORD_TOKEN
+      - key: AI_SECRET_KEY
         sync: false
-      - key: OPENAI_API_KEY
+      - key: ADMIN_USER_IDS
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: ADMIN_ROLE_IDS
         sync: false
-      - key: GEMINI_API_KEY
+      - key: DEFAULT_PROVIDER
+        value: gemini
+      - key: DEFAULT_MODEL
         sync: false
-      - key: OMNIROUTE_ENABLED
-        value: "false"
-      - key: OMNIROUTE_BASE_URL
-        sync: false
-      - key: OMNIROUTE_API_KEY
-        sync: false
-      - key: OMNIROUTE_MODEL
-        value: auto
-      - key: HEADROOM_ENABLED
-        value: "true"
-      - key: HEADROOM_FAIL_OPEN
-        value: "true"
-      - key: HEADROOM_TOKEN_BUDGET
-        value: "0"
-      - key: DISCORD_REPLY_ALL_MESSAGES
-        value: "true"
-      - key: BOT_NAME
-        value: AI Council
-      - key: OPENAI_MODEL
-        value: gpt-5.5
-      - key: ANTHROPIC_MODEL
-        value: claude-opus-5-5
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
-      - key: DEEPSEEK_API_KEY
-        sync: false
-      - key: DEEPSEEK_MODEL
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
-      - key: GROQ_MODEL
-        sync: false
-      - key: MISTRAL_API_KEY
-        sync: false
-      - key: MISTRAL_MODEL
-        sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: OPENROUTER_MODEL
-        sync: false
-      - key: XAI_API_KEY
-        sync: false
-      - key: XAI_MODEL
-        sync: false
-      - key: TOGETHER_API_KEY
-        sync: false
-      - key: TOGETHER_MODEL
-        sync: false
-      - key: FIREWORKS_API_KEY
-        sync: false
-      - key: FIREWORKS_MODEL
-        sync: false
-      - key: CEREBRAS_API_KEY
-        sync: false
-      - key: CEREBRAS_MODEL
-        sync: false
-      - key: PERPLEXITY_API_KEY
-        sync: false
-      - key: PERPLEXITY_MODEL
-        sync: false
-      - key: SAMBANOVA_API_KEY
-        sync: false
-      - key: SAMBANOVA_MODEL
-        sync: false
-      - key: NVIDIA_API_KEY
-        sync: false
-      - key: NVIDIA_MODEL
-        sync: false
-      - key: CUSTOM_AI_PROVIDERS_JSON
-        value: "[]"
-      - key: MAX_DEBATE_MODELS
-        value: "4"
-      - key: PROVIDER_COOLDOWN_MS
-        value: "30000"
-      - key: MAX_PARALLEL_AI
-        value: "4"
-      - key: HEADROOM_MIN_CHARS
-        value: "1200"
-      - key: OPENAI_MAX_TOKENS
-        value: "6000"
-      - key: ANTHROPIC_MAX_TOKENS
-        value: "5000"
-      - key: EASY_THRESHOLD
-        value: "30"
-      - key: MEDIUM_THRESHOLD
-        value: "65"
-      - key: COMFYUI_URL
-        sync: false
-      - key: COMFYUI_CHECKPOINT
-        sync: false
-
+      - key: PORT
+        value: "10000"
 databases:
   - name: discord-ai-db
+    plan: free
