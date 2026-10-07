@@ -15,7 +15,7 @@ const server=http.createServer(async(req,res)=>{
   res.writeHead(404,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify({error:'Not found'}));
 });
 
-client.once('ready',async()=>{console.log(`✅ Bot online: ${client.user.tag}`);try{await registerAdmin(client);console.log('✅ /admin đã sẵn sàng');}catch(err){console.error('❌ Đăng ký /admin thất bại:',err);}});
+client.once('clientReady',async()=>{console.log(`✅ Bot online: ${client.user.tag}`);try{await registerAdmin(client);console.log('✅ /admin đã sẵn sàng');}catch(err){console.error('❌ Đăng ký /admin thất bại:',err);}});
 await initDb();
 server.listen(PORT,'0.0.0.0',()=>console.log(`🌐 Health server listening on ${PORT}`));
 try{await client.login(process.env.DISCORD_TOKEN);}catch(err){console.error('❌ Discord login failed:',err);process.exit(1);}
