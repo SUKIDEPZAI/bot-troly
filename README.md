@@ -1,24 +1,18 @@
-# Discord AI Council 11.0 — Free-first Admin
+# Discord AI Council 12.0 — API/Model Fix
 
-Bản Render-first: Discord + Render Web Service + Render PostgreSQL. Chỉ có `/admin`.
+## Điểm sửa chính
+- Sửa lỗi HTTP 404 do endpoint API bị ghép sai.
+- Provider có endpoint riêng cho model và chat.
+- Gemini dùng `/v1beta/models?key=...` và `models/{id}:generateContent`.
+- OpenAI/Groq/OpenRouter dùng `/v1/models` và `/v1/chat/completions` theo provider.
+- DeepSeek dùng base `https://api.deepseek.com`, model list `/models`, chat `/chat/completions`.
+- Anthropic dùng `/v1/models` và `/v1/messages`.
+- Tab AI & MODEL gọi danh sách model thật từ API sau khi chọn provider.
+- Nếu API không hỗ trợ model discovery hoặc tạm lỗi, hệ thống fallback sang model đã lưu/gợi ý.
+- Model được lưu kèm mô tả.
+- API key mã hóa AES-256-GCM trong PostgreSQL.
+- Có khóa kênh bot và hàm `isChannelAllowed(channelId)` để dùng trước khi phản hồi.
+- `/admin` được đăng ký sau `ready`.
 
-## Tính năng
-- `/admin` duy nhất, dashboard bằng buttons/selects/modals.
-- API/model tự lưu PostgreSQL.
-- API key mã hóa AES-256-GCM; key không nằm trong GitHub.
-- Model catalog và gợi ý model theo vai trò.
-- Free-first metadata để ưu tiên model free-tier.
-- Health check provider/model.
-- Render Docker + PostgreSQL.
-
-## Cài
-1. Tạo PostgreSQL và Web Service trên Render.
-2. Thêm `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `AI_SECRET_KEY` và `ADMIN_USER_IDS`/`ADMIN_ROLE_IDS`.
-3. Deploy.
-4. Vào Discord và gõ `/admin`.
-5. Thêm API trước, sau đó thêm model.
-
-`AI_SECRET_KEY` phải là secret dài, ổn định. Đổi key sẽ làm các API key đã mã hóa không giải mã được.
-
-## Lưu ý
-Bot không tự cấp API miễn phí. “Free-first” chỉ có nghĩa ưu tiên provider/model mà bạn đã cấu hình và đánh dấu free-tier. Không đưa API key thật vào GitHub.
+## Deploy
+Up toàn bộ project này lên GitHub và redeploy Render. Giữ nguyên PostgreSQL hiện tại; schema tự migrate bằng `CREATE IF NOT EXISTS` và `ALTER TABLE ... IF NOT EXISTS`.

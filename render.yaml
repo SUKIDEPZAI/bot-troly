@@ -3,7 +3,6 @@ services:
     name: discord-ai-council
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
       - key: DISCORD_TOKEN
@@ -25,7 +24,7 @@ services:
       - key: DEFAULT_PROVIDER
         value: gemini
       - key: DEFAULT_MODEL
-        sync: false
+        value: ""
       - key: PORT
         value: "10000"
 databases:
