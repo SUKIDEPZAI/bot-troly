@@ -46,6 +46,30 @@ export async function initDb() {
   await pool.query(`ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
   await pool.query(`ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`);
 
+  // Migration quan trọng cho schema cũ: một số bản trước dùng `provider_id`
+  // thay vì `provider`. Không xóa dữ liệu cũ; tạo cột mới và đồng bộ tên provider.
+  const modelCols = await pool.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='ai_models'
+  `);
+  const modelNames = new Set(modelCols.rows.map(r => r.column_name));
+  if (!modelNames.has('provider')) {
+    await pool.query(`ALTER TABLE ai_models ADD COLUMN provider TEXT`);
+  }
+  if (modelNames.has('provider_id')) {
+    await pool.query(`
+      UPDATE ai_models m
+      SET provider = p.name
+      FROM ai_providers p
+      WHERE m.provider IS NULL AND m.provider_id = p.id
+    `);
+    // Cho phép bản mới thêm model bằng provider name mà không cần provider_id.
+    await pool.query(`ALTER TABLE ai_models ALTER COLUMN provider_id DROP NOT NULL`);
+  }
+  await pool.query(`UPDATE ai_models SET provider='' WHERE provider IS NULL`);
+  await pool.query(`ALTER TABLE ai_models ALTER COLUMN provider SET NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ai_models_provider_name_uq ON ai_models(provider,name)`);
+
   const cols = await pool.query(`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema='public' AND table_name='ai_providers'
