@@ -2,7 +2,7 @@ import 'dotenv/config';
 import http from 'node:http';
 import { Client, GatewayIntentBits } from 'discord.js';
 import { initDb } from './db.js';
-import { registerAdmin } from './admin.js';
+import { registerAdmin, isChannelAllowed } from './admin.js';
 
 const PORT = Number(process.env.PORT || 10000);
 
@@ -27,8 +27,10 @@ client.once('ready', async () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
 
   try {
+    client.aiChannelAllowed = isChannelAllowed;
     await registerAdmin(client);
     console.log('✅ Đã đăng ký /admin');
+    console.log('🔒 Bộ kiểm soát kênh AI đã sẵn sàng');
   } catch (error) {
     console.error('❌ Không thể đăng ký /admin:', error);
   }
