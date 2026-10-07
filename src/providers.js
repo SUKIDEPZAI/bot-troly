@@ -1,16 +1,180 @@
-import {getSecret,listModels} from './db.js';
-const catalogs={
- gemini:{label:'Google Gemini',base:'https://generativelanguage.googleapis.com/v1beta/models',free:true,desc:'Nhanh, đa phương thức, phù hợp chat/code và tác vụ dài.'},
- groq:{label:'Groq',base:'https://api.groq.com/openai/v1',free:true,desc:'Inference rất nhanh; phù hợp tác vụ cần phản hồi nhanh.'},
- openrouter:{label:'OpenRouter',base:'https://openrouter.ai/api/v1',free:true,desc:'Gateway nhiều model; có thể chọn các model có free tier.'},
- deepseek:{label:'DeepSeek',base:'https://api.deepseek.com',free:false,desc:'Mạnh về coding/reasoning; chỉ dùng khi API của bạn có hạn mức.'},
- openai:{label:'OpenAI',base:'https://api.openai.com/v1',free:false,desc:'General/reasoning/coding; dùng khi tài khoản có API credit.'},
- anthropic:{label:'Anthropic Claude',base:'https://api.anthropic.com/v1',free:false,desc:'Mạnh về coding, phân tích và agent; cần API access.'}
+import { getProvider } from './db.js';
+
+export const PROVIDERS = {
+  gemini: {
+    label: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    modelsPath: '/models',
+    description: 'AI đa năng của Google; hỗ trợ chat, code, phân tích và nhiều khả năng đa phương thức.'
+  },
+  groq: {
+    label: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    modelsPath: '/models',
+    chatPath: '/chat/completions',
+    description: 'Hạ tầng suy luận tốc độ cao với API tương thích OpenAI.'
+  },
+  openrouter: {
+    label: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelsPath: '/models',
+    chatPath: '/chat/completions',
+    description: 'Cổng truy cập nhiều nhà cung cấp và model AI.'
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    modelsPath: '/models',
+    chatPath: '/chat/completions',
+    description: 'Mạnh về lập trình, chat và suy luận.'
+  },
+  openai: {
+    label: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    modelsPath: '/models',
+    chatPath: '/chat/completions',
+    description: 'Hệ sinh thái model AI tổng quát của OpenAI.'
+  },
+  anthropic: {
+    label: 'Anthropic Claude',
+    baseUrl: 'https://api.anthropic.com/v1',
+    modelsPath: '/models',
+    chatPath: '/messages',
+    description: 'Claude; mạnh về phân tích, viết và lập luận.'
+  }
 };
-export function catalog(){return catalogs;}
-async function json(res){const text=await res.text();let data={};try{data=JSON.parse(text)}catch{}if(!res.ok)throw new Error(data.error?.message||data.message||`HTTP ${res.status}`);return data;}
-export async function chat(provider,model,messages){const cfg=await getSecret(provider);if(!cfg)throw new Error(`Provider ${provider} chưa được cấu hình.`);if(provider==='gemini'){const key=cfg.apiKey;const url=`${cfg.baseUrl||catalogs.gemini.base}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;const contents=messages.filter(m=>m.role!=='system').map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));const system=messages.find(m=>m.role==='system')?.content;const body={contents};if(system)body.systemInstruction={parts:[{text:system}]};const data=await json(await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));return data.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';}
- const base=(cfg.baseUrl||catalogs[provider]?.base||'').replace(/\/$/,'');const headers={'content-type':'application/json','authorization':`Bearer ${cfg.apiKey}`};if(provider==='anthropic'){headers['x-api-key']=cfg.apiKey;delete headers.authorization;headers['anthropic-version']='2023-06-01';}
- const data=await json(await fetch(`${base}/messages`,{method:'POST',headers,body:JSON.stringify({model,max_tokens:4096,messages:messages.filter(m=>m.role!=='system'),system:messages.find(m=>m.role==='system')?.content})}));return provider==='anthropic'?(data.content||[]).map(x=>x.text||'').join(''):data.choices?.[0]?.message?.content||'';}
-export async function testProvider(provider,model){const started=Date.now();const text=await chat(provider,model,[{role:'user',content:'Reply with exactly: OK'}]);return {ok:/OK/i.test(text),latency:Date.now()-started,text:text.slice(0,80)};}
-export function suggestedModels(provider){const x={gemini:[['gemini-2.5-flash','Nhanh, general/coding, phù hợp free-tier khi khả dụng','fast'],['gemini-2.5-pro','Reasoning và tác vụ khó','reasoning']],groq:[['openai/gpt-oss-120b','Open-weight reasoning/coding, inference nhanh','reasoning'],['llama-3.3-70b-versatile','General/coding nhanh','general']],openrouter:[['openrouter/free','Router tự chọn model free khả dụng','router']],deepseek:[['deepseek-chat','General/coding','coding'],['deepseek-reasoner','Reasoning khó','reasoning']],openai:[['gpt-4.1-mini','General/coding','coding']],anthropic:[['claude-sonnet-4-5','Coding, phân tích, agent','coding']]}[provider]||[];return x.map(([name,description,role])=>({name,description,role}));}
+
+function cleanBase(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+function endpoint(base, path) {
+  const b = cleanBase(base);
+  const p = String(path || '').replace(/^\/+/, '');
+  return `${b}/${p}`;
+}
+
+async function requestJson(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...(options.headers || {}) } });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+    if (!res.ok) {
+      const detail = data?.error?.message || data?.error?.type || data?.message || data?.raw || `${res.status} ${res.statusText}`;
+      throw new Error(`HTTP ${res.status}: ${detail}`);
+    }
+    return data;
+  } finally { clearTimeout(timer); }
+}
+
+
+function normalizeBase(provider, url) {
+  let b = cleanBase(url);
+  if (provider === 'gemini') {
+    if (/generativelanguage\.googleapis\.com$/i.test(b)) b += '/v1beta';
+  } else if (provider === 'deepseek') {
+    b = b.replace(/\/v1$/i, '');
+  } else if (provider === 'groq') {
+    if (/api\.groq\.com$/i.test(b)) b += '/openai/v1';
+  } else if (provider === 'openrouter') {
+    if (/openrouter\.ai$/i.test(b)) b += '/api/v1';
+  } else if (provider === 'openai') {
+    if (/api\.openai\.com$/i.test(b)) b += '/v1';
+  } else if (provider === 'anthropic') {
+    if (/api\.anthropic\.com$/i.test(b)) b += '/v1';
+  }
+  return b;
+}
+function headersFor(provider, key) {
+  if (provider === 'gemini') return {};
+  if (provider === 'anthropic') return { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
+  return { Authorization: `Bearer ${key}` };
+}
+
+function normalizeModel(provider, raw) {
+  const id = raw?.id || raw?.name?.replace(/^models\//, '');
+  if (!id) return null;
+  const description = raw?.description || raw?.name || '';
+  const context = raw?.context_window || raw?.context_length || raw?.inputTokenLimit || raw?.top_provider?.context_length;
+  const supported = raw?.supportedGenerationMethods || raw?.supported_actions || [];
+  const text = JSON.stringify(raw).toLowerCase();
+  const likelyChat = provider === 'gemini'
+    ? supported.includes('generateContent')
+    : provider === 'anthropic'
+      ? true
+      : provider === 'openrouter'
+        ? (raw?.architecture?.output_modalities?.includes('text') ?? true)
+        : !/(embedding|embed|whisper|tts|speech|moderation|guard|image|audio)/i.test(id);
+  if (!likelyChat) return null;
+  return {
+    id,
+    name: raw?.name || id,
+    description: description.slice(0, 300),
+    context: context || null,
+    free: provider === 'openrouter' ? /(^|:)free$/i.test(id) || Number(raw?.pricing?.prompt || 0) === 0 : false,
+    rawText: text
+  };
+}
+
+export async function listRemoteModels(providerName) {
+  const provider = String(providerName || '').toLowerCase();
+  const cfg = PROVIDERS[provider];
+  if (!cfg) throw new Error(`Provider '${provider}' chưa được hỗ trợ.`);
+  const saved = await getProvider(provider);
+  if (!saved?.api_key) throw new Error(`Chưa có API key cho ${cfg.label}.`);
+  const base = normalizeBase(provider, saved.base_url || cfg.baseUrl);
+  const url = provider === 'gemini' ? `${base}/models?key=${encodeURIComponent(saved.api_key)}` : endpoint(base, cfg.modelsPath);
+  const data = await requestJson(url, { headers: headersFor(provider, saved.api_key) });
+  const list = Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  return list.map(x => normalizeModel(provider, x)).filter(Boolean);
+}
+
+export async function testProvider(providerName) {
+  const models = await listRemoteModels(providerName);
+  return { ok: true, message: `Kết nối OK · tìm thấy ${models.length} model chat`, models };
+}
+
+export async function chat({ provider: providerName, model, messages, temperature = 0.7, maxTokens = 1200 }) {
+  const provider = String(providerName || '').toLowerCase();
+  const cfg = PROVIDERS[provider];
+  const saved = await getProvider(provider);
+  if (!cfg || !saved?.api_key) throw new Error(`Provider ${provider} chưa được cấu hình API.`);
+  const base = normalizeBase(provider, saved.base_url || cfg.baseUrl);
+
+  if (provider === 'gemini') {
+    const contents = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content ?? '') }] }));
+    const system = messages.find(m => m.role === 'system')?.content;
+    const body = { contents, generationConfig: { temperature, maxOutputTokens: maxTokens } };
+    if (system) body.systemInstruction = { parts: [{ text: String(system) }] };
+    const data = await requestJson(`${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(saved.api_key)}`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+    return data?.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('') || '';
+  }
+
+  if (provider === 'anthropic') {
+    const system = messages.find(m => m.role === 'system')?.content;
+    const body = { model, max_tokens: maxTokens, temperature, messages: messages.filter(m=>m.role!=='system').map(m=>({ role:m.role==='assistant'?'assistant':'user', content:String(m.content??'') })) };
+    if (system) body.system = String(system);
+    const data = await requestJson(`${base}${cfg.chatPath}`, { method:'POST', headers:{'content-type':'application/json', ...headersFor(provider,saved.api_key)}, body:JSON.stringify(body) });
+    return data?.content?.map(x=>x.text||'').join('') || '';
+  }
+
+  const data = await requestJson(`${base}${cfg.chatPath}`, { method:'POST', headers:{'content-type':'application/json', ...headersFor(provider,saved.api_key)}, body:JSON.stringify({ model, messages, temperature, max_tokens:maxTokens }) });
+  return data?.choices?.[0]?.message?.content || '';
+}
+
+export function suggestedModels(providerName = null) {
+  const all = [
+    {provider:'gemini',name:'gemini-3.8-flash',free:true,description:'Model Flash mới, ưu tiên tốc độ và tác vụ đa năng.'},
+    {provider:'gemini',name:'gemini-2.5-flash-lite',free:true,description:'Model nhẹ, phù hợp tác vụ nhanh và tiết kiệm.'},
+    {provider:'groq',name:'llama-3.1-8b-instant',free:true,description:'Model nhỏ, phản hồi nhanh; phù hợp chatbot.'},
+    {provider:'deepseek',name:'deepseek-chat',free:true,description:'Model chat đa năng của DeepSeek.'},
+    {provider:'deepseek',name:'deepseek-reasoner',free:true,description:'Model thiên về suy luận; tình trạng miễn phí phụ thuộc tài khoản.'},
+    {provider:'openrouter',name:'openrouter/free',free:true,description:'Điểm vào model miễn phí do OpenRouter cung cấp; model thực tế có thể thay đổi.'},
+    {provider:'openai',name:'gpt-5.2',free:false,description:'Model OpenAI; yêu cầu quyền truy cập và thanh toán phù hợp.'},
+    {provider:'anthropic',name:'claude-sonnet-4-6',free:false,description:'Claude mạnh về phân tích và lập luận; yêu cầu API phù hợp.'}
+  ];
+  return providerName ? all.filter(x=>x.provider===String(providerName).toLowerCase()) : all;
+}
