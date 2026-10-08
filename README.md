@@ -5,7 +5,7 @@ Bot Discord đa AI: **nhắn bình thường** → tự chấm độ khó và ch
 ## Tính năng
 - **Auto Route**: chấm độ khó (DỄ/TB/KHÓ) → chọn tầng model; ưu tiên model miễn phí (tùy chọn); tự fallback qua provider khác khi lỗi.
 - **Hội đồng + Judge**: gọi tối đa 5 AI song song (có hạn chót), một AI nhanh nhất tổng hợp đáp án; lỗi judge → chọn câu tốt nhất theo chấm điểm.
-- **Trí nhớ hội thoại theo kênh** (RAM, 20 phút), nhớ ai đang nói; nút **🧠 Hỏi Hội đồng / 🔄 Làm lại / 🗑️ Xóa** dưới mỗi câu trả lời.
+- **Trí nhớ hội thoại** theo (kênh, người dùng) (RAM, 20 phút); nút **🧠 Hỏi Hội đồng / 🔄 Làm lại / 🗑️ Xóa** dưới mỗi câu trả lời.
 - **Persona**: Mặc định / Chuyên nghiệp / Vui vẻ / Giảng viên / Lập trình viên.
 - **Sức khỏe provider/model**: cooldown đúng phạm vi (key sai → cả provider; model bị xóa → chỉ model đó), backoff theo số lần lỗi.
 - **Slash**: `/ask` · `/status` · `/clear` · `/admin`.
@@ -19,7 +19,7 @@ Bot Discord đa AI: **nhắn bình thường** → tự chấm độ khó và ch
 4. Trong Discord: `/admin` → 🔑 API → chọn provider → dán key → bot tự đồng bộ model.
 
 ## Deploy Render
-Ghi đè code vào repo → push. **Không xóa PostgreSQL.** Schema tự migrate (thêm bảng `ai_usage`).
+Ghi đè code vào repo → chạy `npm install` một lần để sinh `package-lock.json` rồi commit cùng → push. **Không xóa PostgreSQL.** Schema tự migrate (thêm bảng `ai_usage`).
 > Lưu ý: gói `free` của Render có thể ngủ khi không có truy cập HTTP (bot sẽ offline) — dùng dịch vụ ping `/health` hoặc nâng gói; kiểm tra thêm chính sách hạn dùng của PostgreSQL free.
 
 ## Cấu trúc
@@ -34,3 +34,6 @@ src/admin.js      bảng /admin        src/ui.js  theme & embed
 src/db.js         PostgreSQL         src/settings.js  cache cấu hình
 legacy/           mã v11 không còn dùng (xem legacy/README.md)
 ```
+
+## Endpoint
+`/live` (tiến trình còn sống) · `/health` = `/ready` (Discord + PostgreSQL sẵn sàng; 503 nếu chưa).
