@@ -5,9 +5,9 @@ const pg = await import('pg');
 const { encrypt } = await import('../src/crypto.js');
 
 const mkProv = n => ({ id: 1, name: n, base_url: '', api_key_encrypted: encrypt(`key-${n}-1234567890`), last_ok_at: null, last_error: '', fail_count: 0, cooldown_until: null, avg_latency_ms: null, created_at: new Date(), updated_at: new Date() });
-const providers = ['groq', 'gemini', 'mistral'].map(mkProv);
+const providers = ['groq', 'gemini', 'mistral', 'cerebras'].map(mkProv);
 const mkModel = (provider, name, tier) => ({ id: Math.random(), provider, name, free: true, enabled: true, description: '', tier, context_length: 8000, capabilities: '', hidden: false });
-const models = [mkModel('groq', 'big-70b', 3), mkModel('groq', 'small-8b', 1), mkModel('gemini', 'gem-pro', 3), mkModel('mistral', 'mistral-large-latest', 3)];
+const models = [mkModel('groq', 'big-70b', 3), mkModel('groq', 'small-8b', 1), mkModel('gemini', 'gem-pro', 3), mkModel('mistral', 'mistral-large-latest', 3), mkModel('cerebras', 'llama-3.3-70b', 3)];
 
 pg.default.Pool.prototype.query = async function (sql, params) {
   sql = String(sql);
@@ -19,13 +19,20 @@ pg.default.Pool.prototype.query = async function (sql, params) {
 
 let behavior = () => ({ status: 200, text: 'ok' });
 const calls = [];
+const aborted = [];
 globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : {};
-  const provider = /groq/.test(url) ? 'groq' : /googleapis/.test(url) ? 'gemini' : 'mistral';
+  const provider = /groq/.test(url) ? 'groq' : /googleapis/.test(url) ? 'gemini' : /cerebras/.test(url) ? 'cerebras' : 'mistral';
   const model = body.model || decodeURIComponent((String(url).match(/models\/([^:]+):/) || [])[1] || '');
   const isJudge = JSON.stringify(body).includes('biên tập viên tổng hợp');
   calls.push({ provider, model, isJudge });
   const r = behavior({ provider, model, isJudge });
+  if (r.delay) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, r.delay);
+      opts.signal?.addEventListener('abort', () => { clearTimeout(timer); aborted.push(provider); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+    });
+  }
   const payload = provider === 'gemini'
     ? (r.status === 200 ? { candidates: [{ content: { parts: [{ text: r.text }] }, finishReason: 'STOP' }] } : { error: { message: 'boom' } })
     : (r.status === 200 ? { choices: [{ message: { content: r.text }, finish_reason: 'stop' }] } : { error: { message: 'boom' } });
@@ -37,7 +44,7 @@ const H = await import('../src/health.js');
 const settings = { freeFirst: true, autoRoute: true, council: true, councilJudge: true, defaultProvider: null, defaultModel: null };
 const msgs = [{ role: 'user', content: 'Hãy phân tích kiến trúc hệ thống' }];
 const prompt = 'Hãy phân tích kiến trúc hệ thống';
-const reset = () => { H.clearHealth(); E.invalidateRoute(); calls.length = 0; };
+const reset = () => { H.clearHealth(); E.invalidateRoute(); calls.length = 0; aborted.length = 0; };
 
 test('routedChat: provider lỗi 503 → tự fallback sang provider khác và cooldown provider lỗi', async () => {
   reset();
@@ -88,12 +95,36 @@ test('councilChat: nhiều AI trả lời → judge tổng hợp', async () => {
   assert.equal(calls.filter(c => c.isJudge).length, 1);
 });
 
-test('councilChat: judge lỗi → dùng câu trả lời xếp hạng cao nhất', async () => {
+test('councilChat: judge lỗi (400) → dùng câu xếp hạng cao nhất và KHÔNG làm cooldown model vừa trả lời tốt', async () => {
   reset();
-  behavior = ({ provider, isJudge }) => (isJudge ? { status: 503 } : { status: 200, text: `Ý kiến của ${provider}: phân tích khá dài và đầy đủ để được chọn.` });
+  behavior = ({ provider, isJudge }) => (isJudge ? { status: 400 } : { status: 200, text: `Ý kiến của ${provider}: phân tích khá dài và đầy đủ để được chọn.` });
   const r = await E.councilChat({ messages: msgs, prompt, settings });
   assert.equal(r.mode, 'council'); assert.equal(r.council.judged, false);
   assert.match(r.text, /Ý kiến của/);
+  for (const m of models) assert.equal(H.isModelCooling(m.provider, m.name), false, `${m.provider}/${m.name} bị cooldown oan`);
+  for (const p of providers) assert.equal(H.isProviderCooling(p.name), false);
+});
+
+test('councilChat: hủy request còn lại khi đã đủ đáp án, và AI bị hủy KHÔNG bị cooldown', async () => {
+  reset();
+  behavior = ({ provider, isJudge }) => (provider === 'groq' ? { status: 200, text: 'chậm', delay: 20000 } : { status: 200, text: isJudge ? 'TỔNG HỢP của hội đồng — đầy đủ nội dung.' : `Ý kiến của ${provider}: phân tích khá dài và đầy đủ.` });
+  const t0 = Date.now();
+  const r = await E.councilChat({ messages: msgs, prompt, settings });
+  assert.ok(Date.now() - t0 < 6000, 'không được chờ AI chậm');
+  assert.equal(r.mode, 'council');
+  assert.deepEqual(aborted, ['groq']);
+  assert.equal(H.isProviderCooling('groq'), false);
+  assert.equal(H.isModelCooling('groq', 'big-70b'), false);
+});
+
+test('buildJudgeMessages: prompt judge không vượt ngân sách ký tự', () => {
+  const long = 'x'.repeat(10000);
+  const msgsJ = E.buildJudgeMessages(long, Array.from({ length: 5 }, () => ({ text: long })), 6000);
+  const total = msgsJ.reduce((n, m) => n + m.content.length, 0);
+  assert.ok(total < 6000 + 800, `tổng ${total}`);
+  assert.equal(E.judgeBudget({ contextLength: 2000 }), 4000);
+  assert.equal(E.judgeBudget({ contextLength: 1_000_000 }), 12000);
+  assert.equal(E.judgeBudget({}), 12000);
 });
 
 test('councilChat: tắt judge → không gọi judge', async () => {

@@ -147,3 +147,41 @@ test('redact & stripThink', () => {
   assert.equal(U.stripThink('<think>a\nb</think>\nKết quả'), 'Kết quả');
   assert.equal(U.stripThink('suy nghĩ</think>Đáp án'), 'Đáp án');
 });
+
+test('crypto v2: ghi bằng scrypt (tiền tố v2.) và vẫn đọc được dữ liệu cũ SHA-256', async () => {
+  const nodeCrypto = await import('node:crypto');
+  const iv = nodeCrypto.randomBytes(12);
+  const key = nodeCrypto.createHash('sha256').update(process.env.AI_SECRET_KEY).digest();
+  const cipher = nodeCrypto.createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([cipher.update('sk-legacy-key-123456', 'utf8'), cipher.final()]);
+  const legacy = `${iv.toString('base64')}.${cipher.getAuthTag().toString('base64')}.${data.toString('base64')}`;
+  assert.equal(C.decrypt(legacy), 'sk-legacy-key-123456');
+  assert.equal(C.isLegacyCiphertext(legacy), true);
+  const fresh = C.encrypt('sk-new-key-123456');
+  assert.ok(fresh.startsWith('v2.'));
+  assert.equal(C.isLegacyCiphertext(fresh), false);
+  assert.equal(C.looksEncrypted(fresh), true);
+  assert.equal(C.decrypt(fresh), 'sk-new-key-123456');
+  assert.notEqual(C.encrypt('same'), C.encrypt('same'));
+});
+
+test('history: mặc định tách theo (kênh, người dùng) — người sau không thấy ngữ cảnh người trước', async () => {
+  const Hs = await import('../src/history.js');
+  const kA = Hs.historyKey('chan', 'A'), kB = Hs.historyKey('chan', 'B');
+  assert.notEqual(kA, kB);
+  Hs.addTurn(kA, 'A: bí mật của A', 'trả lời cho A');
+  assert.equal(Hs.getHistory(kA).length, 2);
+  assert.equal(Hs.getHistory(kB).length, 0);
+  Hs.clearHistory('chan', 'A');
+  assert.equal(Hs.getHistory(kA).length, 0);
+});
+
+test('requestJson: AbortSignal hủy ngay, không retry, đánh dấu aborted', async () => {
+  const P = await import('../src/providers.js');
+  const ac = new AbortController();
+  globalThis.fetch = (url, o) => new Promise((_, rej) => o.signal.addEventListener('abort', () => rej(Object.assign(new Error('x'), { name: 'AbortError' }))));
+  const p = P.requestJson('http://x', {}, { timeoutMs: 5000, retries: 3, signal: ac.signal });
+  setTimeout(() => ac.abort(), 20);
+  await assert.rejects(p, e => e.aborted === true && e.name === 'AbortError');
+  await assert.rejects(P.requestJson('http://x', {}, { signal: ac.signal }), e => e.aborted === true);
+});
