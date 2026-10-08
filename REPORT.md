@@ -93,3 +93,18 @@ Mình đối chiếu từng mục với code thật trước khi sửa. Kết qu
 **Mã lỗi để truy vết:** thông báo "Có lỗi xảy ra" chung giờ kèm `mã lỗi` và log cùng mã đó, nên khi gặp lại bạn có thể tra đúng dòng log thay vì đoán.
 
 **Chưa xác minh với Discord/PostgreSQL thật** (không có mạng): vẫn khuyến nghị thử trên server Discord thử nghiệm trước khi đưa vào dùng chính thức.
+
+
+---
+
+# 8. Hotfix v13.1.1 — `null value in column "api_key_enc" … violates not-null constraint`
+
+**Nguyên nhân:** DB đang chạy của bạn còn cột cũ `ai_providers.api_key_enc` (từ phiên bản schema trước) ở dạng `NOT NULL`. Code hiện tại chỉ ghi `api_key_encrypted`, nên lưu API key (`adm_api_modal:*`) bị PostgreSQL từ chối. Bản trước chỉ biết gỡ ràng buộc của cột `api_key`.
+
+**Sửa:** khi khởi động, `initDb` tự gỡ `NOT NULL` của **mọi cột legacy** (không có DEFAULT, không thuộc schema hiện tại) trên `ai_providers`, `ai_models`, `ai_settings`. Có test.
+
+**Làm ngay nếu chưa kịp deploy:** chạy trong PostgreSQL rồi nhập lại API key:
+```sql
+ALTER TABLE ai_providers ALTER COLUMN api_key_enc DROP NOT NULL;
+```
+(Dữ liệu trong `api_key_enc` không được dùng lại vì không rõ định dạng mã hóa cũ — bạn cần nhập lại key trong `/admin → API`.)

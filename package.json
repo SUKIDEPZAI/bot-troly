@@ -1,6 +1,6 @@
 {
   "name": "discord-ai-council",
-  "version": "13.1.0",
+  "version": "13.1.1",
   "description": "Discord bot đa AI: tự định tuyến theo độ khó, Hội đồng nhiều AI + judge, bảng quản trị /admin.",
   "type": "module",
   "private": true,
