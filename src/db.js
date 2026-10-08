@@ -105,6 +105,10 @@ export async function initDb() {
     `);
     await pool.query(`ALTER TABLE ai_providers ALTER COLUMN api_key DROP NOT NULL`).catch(() => {});
   }
+  // Schema cũ có thể còn cột lạ (vd. api_key_enc) mang NOT NULL mà code hiện tại không ghi → INSERT bị từ chối.
+  await relaxLegacyColumns('ai_providers', ['id', 'name']);
+  await relaxLegacyColumns('ai_models', ['id', 'provider', 'name']);
+  await relaxLegacyColumns('ai_settings', ['key', 'value']);
   await pool.query(`UPDATE ai_providers SET base_url='' WHERE base_url IS NULL`);
   await pool.query(`UPDATE ai_providers SET created_at=COALESCE(created_at,NOW()), updated_at=COALESCE(updated_at,NOW())`);
 
@@ -351,4 +355,18 @@ export async function pingDb(timeoutMs = 3000) {
     await Promise.race([pool.query('SELECT 1'), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('DB ping timeout')), timeoutMs); })]);
     return true;
   } finally { clearTimeout(timer); }
+}
+
+/** Gỡ NOT NULL của mọi cột không có DEFAULT và không thuộc schema hiện tại (cột legacy), để INSERT của bot luôn hợp lệ. */
+async function relaxLegacyColumns(table, keep) {
+  const { rows } = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = $1 AND is_nullable = 'NO' AND column_default IS NULL`, [table]);
+  for (const { column_name: col } of rows) {
+    if (keep.includes(col)) continue;
+    try {
+      await pool.query(`ALTER TABLE ${table} ALTER COLUMN "${String(col).replace(/"/g, '""')}" DROP NOT NULL`);
+      console.log(`🛠 Đã gỡ NOT NULL của cột legacy ${table}.${col}`);
+    } catch (err) { console.warn(`⚠️ Không gỡ được NOT NULL của ${table}.${col}: ${err?.message || err}`); }
+  }
 }
