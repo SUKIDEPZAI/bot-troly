@@ -27,3 +27,8 @@ export function mask(value) {
   if (s.length <= 8) return '••••••••';
   return `${s.slice(0, 4)}••••${s.slice(-4)}`;
 }
+
+/** Chuỗi có đúng định dạng mã hóa của bot: iv(12B).tag(16B).data */
+export function looksEncrypted(value) {
+  return /^[A-Za-z0-9+/]{16}\.[A-Za-z0-9+/]{22}==\.[A-Za-z0-9+/=]+$/.test(String(value || ''));
+}

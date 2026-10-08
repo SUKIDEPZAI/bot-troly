@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { encrypt, decrypt } from './crypto.js';
+import { encrypt, decrypt, looksEncrypted } from './crypto.js';
 const { Pool } = pg;
 
 export const pool = new Pool({
@@ -105,20 +105,43 @@ export async function initDb() {
   await pool.query(`UPDATE ai_providers SET base_url='' WHERE base_url IS NULL`);
   await pool.query(`UPDATE ai_providers SET created_at=COALESCE(created_at,NOW()), updated_at=COALESCE(updated_at,NOW())`);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      day DATE NOT NULL DEFAULT CURRENT_DATE,
+      provider TEXT NOT NULL,
+      ok_count INTEGER NOT NULL DEFAULT 0,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      total_latency_ms BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, provider)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ai_models_enabled_idx ON ai_models(enabled, hidden)`);
+
   // Các setting mặc định mới. Không ghi đè cấu hình người dùng.
   await setDefaultSetting('free_first', 'true');
   await setDefaultSetting('auto_route_enabled', 'true');
   await setDefaultSetting('council_enabled', 'true');
+  await setDefaultSetting('council_judge', 'true');
+  await setDefaultSetting('persona', 'default');
 }
 
 async function setDefaultSetting(key, value) {
   await pool.query(`INSERT INTO ai_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO NOTHING`, [key, value]);
 }
 
+let warnedDecrypt = false;
 function safeDecrypt(value) {
   if (!value) return '';
   try { return decrypt(value); }
-  catch { return String(value); }
+  catch {
+    // Dữ liệu cũ lưu plaintext → dùng nguyên. Nếu là ciphertext của bot nhưng giải mã lỗi
+    // (đổi AI_SECRET_KEY) thì trả rỗng, KHÔNG gửi ciphertext đi như một API key.
+    if (looksEncrypted(value)) {
+      if (!warnedDecrypt) { warnedDecrypt = true; console.error('❌ Không giải mã được API key trong DB — AI_SECRET_KEY đã đổi? Hãy nhập lại API key trong /admin.'); }
+      return '';
+    }
+    return String(value);
+  }
 }
 
 export async function listProviders() {
@@ -165,8 +188,16 @@ export async function upsertProvider({ name, apiKey, baseUrl }) {
 }
 
 export async function deleteProvider(name) {
-  await pool.query('DELETE FROM ai_models WHERE lower(provider)=lower($1)', [name]);
-  await pool.query('DELETE FROM ai_providers WHERE lower(name)=lower($1)', [name]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM ai_models WHERE lower(provider)=lower($1)', [name]);
+    await client.query('DELETE FROM ai_providers WHERE lower(name)=lower($1)', [name]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
 }
 
 export async function listModels(provider = null, includeHidden = false) {
@@ -191,7 +222,6 @@ export async function addModel({ provider, name, free = true, description = '', 
       tier=EXCLUDED.tier,
       context_length=COALESCE(EXCLUDED.context_length, ai_models.context_length),
       capabilities=CASE WHEN EXCLUDED.capabilities='' THEN ai_models.capabilities ELSE EXCLUDED.capabilities END,
-      hidden=EXCLUDED.hidden,
       description=CASE WHEN EXCLUDED.description='' THEN ai_models.description ELSE EXCLUDED.description END
     RETURNING *
   `, [provider, name, free, description, tier, contextLength, capabilities, hidden]);
@@ -238,3 +268,57 @@ export async function setSetting(key, value) {
     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()
   `, [key, String(value)]);
 }
+
+/** Upsert hàng loạt model của một provider (1 query thay vì N). Không đụng enabled/hidden do admin đặt. */
+export async function addModelsBulk(provider, models) {
+  if (!models?.length) return 0;
+  const col = f => models.map(m => f(m));
+  await pool.query(`
+    INSERT INTO ai_models(provider,name,free,enabled,description,tier,context_length,capabilities,hidden)
+    SELECT $1, x.name, x.free, TRUE, x.description, x.tier, x.context_length, x.capabilities, FALSE
+    FROM unnest($2::text[],$3::boolean[],$4::text[],$5::int[],$6::int[],$7::text[])
+      AS x(name,free,description,tier,context_length,capabilities)
+    ON CONFLICT(provider,name) DO UPDATE SET
+      free=EXCLUDED.free,
+      tier=EXCLUDED.tier,
+      context_length=COALESCE(EXCLUDED.context_length, ai_models.context_length),
+      capabilities=CASE WHEN EXCLUDED.capabilities='' THEN ai_models.capabilities ELSE EXCLUDED.capabilities END,
+      description=CASE WHEN EXCLUDED.description='' THEN ai_models.description ELSE EXCLUDED.description END
+  `, [
+    provider,
+    col(m => String(m.name)),
+    col(m => Boolean(m.free)),
+    col(m => String(m.description || '').slice(0, 300)),
+    col(m => Number(m.tier) || 2),
+    col(m => (Number.isFinite(Number(m.context)) && Number(m.context) > 0 && Number(m.context) < 2_000_000_000 ? Math.round(Number(m.context)) : null)),
+    col(m => String(m.capabilities || ''))
+  ]);
+  return models.length;
+}
+
+export async function recordUsage(provider, ok, latencyMs = 0) {
+  await pool.query(`
+    INSERT INTO ai_usage(day,provider,ok_count,fail_count,total_latency_ms)
+    VALUES(CURRENT_DATE,$1,$2,$3,$4)
+    ON CONFLICT(day,provider) DO UPDATE SET
+      ok_count=ai_usage.ok_count+EXCLUDED.ok_count,
+      fail_count=ai_usage.fail_count+EXCLUDED.fail_count,
+      total_latency_ms=ai_usage.total_latency_ms+EXCLUDED.total_latency_ms
+  `, [provider, ok ? 1 : 0, ok ? 0 : 1, Math.max(0, Math.round(latencyMs))]).catch(() => {});
+}
+
+export async function usageSummary(days = 7) {
+  const { rows } = await pool.query(`
+    SELECT provider, SUM(ok_count)::int AS ok, SUM(fail_count)::int AS fail,
+           CASE WHEN SUM(ok_count)>0 THEN ROUND(SUM(total_latency_ms)::numeric/SUM(ok_count))::int ELSE NULL END AS avg_ms
+    FROM ai_usage WHERE day >= CURRENT_DATE - ($1::int - 1)
+    GROUP BY provider ORDER BY SUM(ok_count+fail_count) DESC
+  `, [days]);
+  return rows;
+}
+
+export async function setSettings(obj) {
+  for (const [k, v] of Object.entries(obj)) await setSetting(k, v);
+}
+
+export async function closeDb() { await pool.end().catch(() => {}); }
