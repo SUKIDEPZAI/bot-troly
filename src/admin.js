@@ -7,15 +7,15 @@ import {
   addModel, deleteProvider, getSetting, listModels, listProviders, setSetting, toggleModel, upsertProvider, usageSummary
 } from './db.js';
 import { mask } from './crypto.js';
-import { PROVIDERS, clearModelCache, listRemoteModels, suggestedModels, testProvider } from './providers.js';
+import { PROVIDERS, chat, clearModelCache, listRemoteModels, suggestedModels, testProvider } from './providers.js';
 import { syncProviderModels } from './catalog.js';
 import { invalidateRoute } from './engine.js';
 import { getSettings, invalidateSettings, readAllowedIds, toggleSetting, writeAllowedIds } from './settings.js';
 import { interactionIsAdmin } from './permissions.js';
 import { PERSONAS } from './personas.js';
 import { limiterState } from './chat.js';
-import { COLORS, bar, onOff, panel, providerLabel, providerStatus } from './ui.js';
-import { fmtDuration, fmtMs, stats, truncate } from './utils.js';
+import { COLORS, bar, onOff, panel, plainPayload, providerLabel, providerStatus } from './ui.js';
+import { createLimiter, fmtDuration, fmtMs, stats, truncate } from './utils.js';
 
 const EPH = { flags: MessageFlags.Ephemeral };
 const ack = async i => { if (!i.deferred && !i.replied) await i.deferUpdate(); };
@@ -29,7 +29,15 @@ const row = (...c) => new ActionRowBuilder().addComponents(...c);
 const home = (id = 'adm_reload', label = 'Bảng chính') => row(btn(id, label, ButtonStyle.Secondary, { emoji: '↩️' }));
 const info = p => PROVIDERS[String(p || '').toLowerCase()] || { label: p, description: 'Provider tùy chỉnh.', baseUrl: '' };
 const PAGE = 25;
-const edit = (i, embed, components = [], content = '') => i.editReply({ content, embeds: [embed], components });
+const edit = async (i, embed, components = [], content = '') => {
+  try { return await i.editReply({ content, embeds: [embed], components }); }
+  catch (err) {
+    // Nếu embed bị từ chối (vd. thiếu quyền Embed Links): giữ nguyên nút/select, hiển thị nội dung dạng văn bản.
+    console.warn('⚠️ Admin: editReply với embed thất bại → dùng văn bản thường:', err?.message || err);
+    const plain = plainPayload({ embeds: [embed] });
+    return i.editReply({ content: `${content ? `${content}\n` : ''}${plain.content}`.slice(0, 1990), embeds: [], components });
+  }
+};
 
 // ───────────── Bảng chính ─────────────
 function mainRows() {
@@ -242,6 +250,16 @@ async function modelPicked(i) {
   const fallback = suggestedModels(p).find(x => x.name === n);
   let meta = null;
   try { meta = (await listRemoteModels(p)).find(x => x.id === n) || null; } catch { /* dùng gợi ý */ }
+  if (!meta) {
+    // Không xác nhận được qua catalog (API /models lỗi) → thử gọi thật 1 lần rất nhỏ; chỉ lưu nếu model hoạt động.
+    try { await chat({ provider: p, model: n, messages: [{ role: 'user', content: 'Trả lời đúng một từ: OK' }], temperature: 0, maxTokens: 16, timeoutMs: 9000 }); }
+    catch (err) {
+      return edit(i, panel({
+        title: '❌ CHƯA ĐẶT ĐƯỢC MODEL', color: COLORS.danger,
+        description: `**${info(p).label}** · \`${truncate(n, 60)}\`\n\nKhông xác nhận được model này (catalog không khả dụng và gọi thử thất bại):\n\`\`\`${truncate(err?.message || err, 400)}\`\`\`\nModel có thể không tồn tại hoặc tài khoản chưa có quyền. **Mặc định cũ được giữ nguyên.**`
+      }), [row(btn(`adm_models_provider:${p}:0`, 'Chọn model khác', ButtonStyle.Primary, { emoji: '🔄' }), btn(`adm_prov_test:${p}`, 'Kiểm tra API', ButtonStyle.Success, { emoji: '🩺' }), btn('adm_ai', 'Chọn AI', ButtonStyle.Secondary, { emoji: '↩️' }))]);
+    }
+  }
   const free = meta?.free ?? fallback?.free ?? false;
   const tier = meta?.tier ?? fallback?.tier ?? 2;
   const description = meta?.description || fallback?.description || `Model ${n} của ${info(p).label}.`;
@@ -348,12 +366,13 @@ async function routePanel(i) {
 async function routeToggle(i, key) { await ack(i); await toggleSetting(key); return routePanel(i); }
 
 // ───────────── Kiểm tra / thống kê ─────────────
+const testLimiter = createLimiter(3, 100); // tránh bắn song song cả chục API khi bấm "Kiểm tra tất cả" (dễ dính rate-limit)
 async function runTests(ps) {
-  return Promise.all(ps.map(async p => {
+  return Promise.all(ps.map(p => testLimiter.run(async () => {
     const t0 = Date.now();
     try { const r = await testProvider(p.name); return { p, ok: true, text: r.message, ms: Date.now() - t0 }; }
     catch (err) { return { p, ok: false, text: truncate(err?.message || err, 200), ms: Date.now() - t0 }; }
-  }));
+  })));
 }
 const fmtTest = r => `${r.ok ? '🟢' : '🔴'} **${providerLabel(r.p.name)}** · ${fmtMs(r.ms)}\n└ ${r.text}`;
 

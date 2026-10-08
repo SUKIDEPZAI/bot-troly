@@ -1,10 +1,13 @@
 import pg from 'pg';
-import { encrypt, decrypt, looksEncrypted } from './crypto.js';
+import { encrypt, decrypt, looksEncrypted, isLegacyCiphertext } from './crypto.js';
 const { Pool } = pg;
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: String(process.env.PGSSL ?? 'true') === 'true' ? { rejectUnauthorized: false } : false,
+  // PGSSL_REJECT_UNAUTHORIZED=true (+ PGSSL_CA nếu cần) để xác thực chứng chỉ; mặc định false để tương thích Render/DB managed.
+  ssl: String(process.env.PGSSL ?? 'true') === 'true'
+    ? { rejectUnauthorized: String(process.env.PGSSL_REJECT_UNAUTHORIZED ?? 'false') === 'true', ...(process.env.PGSSL_CA ? { ca: process.env.PGSSL_CA.replace(/\\n/g, '\n') } : {}) }
+    : false,
   max: 8,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 8000,
@@ -116,6 +119,8 @@ export async function initDb() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS ai_models_enabled_idx ON ai_models(enabled, hidden)`);
+
+  await migrateKeyEncryption();
 
   // Các setting mặc định mới. Không ghi đè cấu hình người dùng.
   await setDefaultSetting('free_first', 'true');
@@ -248,7 +253,7 @@ export async function recordProviderFailure(name, message, cooldownMs = 30000) {
     UPDATE ai_providers
     SET last_error=$2,fail_count=LEAST(fail_count+1,20),cooldown_until=NOW()+($3 * INTERVAL '1 millisecond'),updated_at=NOW()
     WHERE lower(name)=lower($1)
-  `, [name, String(message || 'Unknown error').slice(0,1000), Math.max(1000, cooldownMs)]).catch(() => {});
+  `, [name, String(message || 'Unknown error').replace(/\s+/g, ' ').slice(0, 300), Math.max(1000, cooldownMs)]).catch(() => {});
 }
 
 export async function getRoutingState() {
@@ -322,3 +327,28 @@ export async function setSettings(obj) {
 }
 
 export async function closeDb() { await pool.end().catch(() => {}); }
+
+/** Nâng cấp key cũ (SHA-256 hoặc plaintext) lên định dạng v2 (scrypt). Lỗi từng dòng không làm hỏng khởi động. */
+async function migrateKeyEncryption() {
+  const { rows } = await pool.query(`SELECT id, api_key_encrypted FROM ai_providers WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted <> '' AND api_key_encrypted NOT LIKE 'v2.%'`);
+  let migrated = 0;
+  for (const r of rows) {
+    try {
+      const v = r.api_key_encrypted;
+      const plain = isLegacyCiphertext(v) ? decrypt(v) : (looksEncrypted(v) ? null : String(v));
+      if (!plain) continue;
+      const res = await pool.query('UPDATE ai_providers SET api_key_encrypted=$1 WHERE id=$2 AND api_key_encrypted=$3', [encrypt(plain), r.id, v]);
+      migrated += res.rowCount || 0;
+    } catch { /* không giải mã được (đổi AI_SECRET_KEY) → giữ nguyên */ }
+  }
+  if (migrated) console.log(`🔐 Đã nâng cấp mã hóa (scrypt) cho ${migrated} API key.`);
+}
+
+/** Kiểm tra DB còn sống (timeout 3s) — dùng cho /health. */
+export async function pingDb(timeoutMs = 3000) {
+  let timer;
+  try {
+    await Promise.race([pool.query('SELECT 1'), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('DB ping timeout')), timeoutMs); })]);
+    return true;
+  } finally { clearTimeout(timer); }
+}

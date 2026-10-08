@@ -3,6 +3,7 @@ import { envInt } from './utils.js';
 
 const TURNS = envInt('HISTORY_TURNS', 8, 0, 30);
 const TTL = envInt('HISTORY_TTL_MS', 20 * 60_000, 10_000);
+const SCOPE = String(process.env.HISTORY_SCOPE || 'user').toLowerCase() === 'channel' ? 'channel' : 'user';
 const MAX_CHARS = 6000;
 const MAX_CHANNELS = 500;
 const store = new Map(); // channelId → { at, items:[{role,content}] }
@@ -18,6 +19,9 @@ function trim(items) {
   while (keep.length && keep[0].role !== 'user') keep.shift();
   return keep;
 }
+
+/** Mặc định mỗi (kênh, người dùng) có trí nhớ riêng → người sau không nhận ngữ cảnh của người trước. HISTORY_SCOPE=channel để dùng chung theo kênh. */
+export const historyKey = (channelId, userId) => (SCOPE === 'channel' ? String(channelId) : `${channelId}:${userId}`);
 
 export function getHistory(channelId, now = Date.now()) {
   const h = store.get(channelId);
@@ -35,5 +39,5 @@ export function addTurn(channelId, userContent, assistantContent, now = Date.now
   if (store.size > MAX_CHANNELS) for (const [k, v] of store) if (now - v.at > TTL) store.delete(k);
 }
 
-export const clearHistory = channelId => store.delete(channelId);
+export const clearHistory = (channelId, userId) => store.delete(historyKey(channelId, userId));
 export const historySize = () => store.size;

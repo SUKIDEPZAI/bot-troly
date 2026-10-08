@@ -204,11 +204,16 @@ function errorDetail(data, res) {
 }
 
 /** 429 KHÔNG retry tại chỗ (để router chuyển tuyến ngay); chỉ retry lỗi mạng/5xx/timeout. */
-export async function requestJson(url, options = {}, { timeoutMs = 12000, retries = 0, provider = '', secrets = [] } = {}) {
+export const abortedError = provider => Object.assign(new Error('Yêu cầu đã bị hủy.'), { name: 'AbortError', aborted: true, provider });
+
+export async function requestJson(url, options = {}, { timeoutMs = 12000, retries = 0, provider = '', secrets = [], signal = null } = {}) {
   let lastErr;
+  if (signal?.aborted) throw abortedError(provider);
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const res = await fetch(url, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...(options.headers || {}) } });
       const text = await res.text();
@@ -222,13 +227,14 @@ export async function requestJson(url, options = {}, { timeoutMs = 12000, retrie
       }
       return data;
     } catch (err) {
+      if (signal?.aborted) { lastErr = abortedError(provider); break; } // bị hủy chủ động → không retry
       lastErr = err?.name === 'AbortError' ? timeoutError(provider) : err;
       const status = Number(lastErr?.status || 0);
       const network = lastErr instanceof TypeError; // fetch failed / DNS / reset
       const retryable = network || lastErr.name === 'TimeoutError' || status === 408 || status === 409 || status >= 500;
       if (!retryable || attempt >= retries) break;
       await new Promise(r => setTimeout(r, 300 * 2 ** attempt));
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); }
   }
   if (lastErr) lastErr.message = redact(lastErr.message, secrets);
   throw lastErr || new Error('Không thể kết nối API.');
@@ -262,9 +268,19 @@ export async function listRemoteModels(providerName, { force = false } = {}) {
   const cached = modelCache.get(provider);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.models;
   const base = normalizeBase(provider, saved.base_url || cfg.baseUrl);
-  const data = await requestJson(modelsUrl(provider, base, cfg), { headers: headersFor(provider, saved.api_key) },
-    { timeoutMs: 10000, retries: 1, provider, secrets: [saved.api_key] });
-  const list = Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  const list = [];
+  let pageToken = '', afterId = '';
+  for (let page = 0; page < 10; page++) { // giới hạn an toàn 10 trang
+    let url = modelsUrl(provider, base, cfg);
+    if (provider === 'gemini' && pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
+    if (provider === 'anthropic' && afterId) url += `&after_id=${encodeURIComponent(afterId)}`;
+    const data = await requestJson(url, { headers: headersFor(provider, saved.api_key) },
+      { timeoutMs: 10000, retries: 1, provider, secrets: [saved.api_key] });
+    list.push(...(Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []));
+    if (provider === 'gemini' && data?.nextPageToken) { pageToken = data.nextPageToken; continue; }
+    if (provider === 'anthropic' && data?.has_more && data?.last_id) { afterId = data.last_id; continue; }
+    break;
+  }
   const models = list.map(x => normalizeModel(provider, x)).filter(Boolean)
     .sort((a, b) => a.tier - b.tier || Number(b.free) - Number(a.free) || a.name.localeCompare(b.name));
   modelCache.set(provider, { expiresAt: Date.now() + MODEL_CACHE_TTL, models });
@@ -340,7 +356,7 @@ export function parseChatResponse(provider, data) {
   return { text: stripThink(text), truncated };
 }
 
-export async function chat({ provider: providerName, model, messages, temperature = 0.7, maxTokens = 1200, timeoutMs = 12000 }) {
+export async function chat({ provider: providerName, model, messages, temperature = 0.7, maxTokens = 1200, timeoutMs = 12000, signal = null }) {
   const provider = String(providerName || '').toLowerCase();
   const cfg = PROVIDERS[provider];
   const saved = await getProvider(provider);
@@ -352,7 +368,7 @@ export async function chat({ provider: providerName, model, messages, temperatur
   try {
     const req = buildChatRequest({ provider, model, messages, temperature, maxTokens, base, apiKey: saved.api_key });
     const data = await requestJson(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) },
-      { timeoutMs, retries: 1, provider, secrets: [saved.api_key] });
+      { timeoutMs, retries: 1, provider, secrets: [saved.api_key], signal });
     const { text, truncated } = parseChatResponse(provider, data);
     if (!text) throw new Error(`${cfg.label} không trả về nội dung.`);
     return { text, truncated, latencyMs: Date.now() - started };

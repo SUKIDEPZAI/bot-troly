@@ -3,7 +3,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'disc
 import { PROVIDERS } from './providers.js';
 import { chunkText, fmtMs, truncate } from './utils.js';
 
-export const VERSION = '13.0';
+export const VERSION = '13.1';
 export const COLORS = { primary: 0x5865F2, ok: 0x57F287, warn: 0xFEE75C, orange: 0xFAA61A, danger: 0xED4245, council: 0x9B59B6, dark: 0x2B2D31 };
 export const FOOTER = `AI Council v${VERSION} · /admin`;
 export const providerLabel = p => PROVIDERS[String(p || '').toLowerCase()]?.label || p;
@@ -98,4 +98,14 @@ export function errorPayload(err, { canEmbed = true } = {}) {
   const text = friendlyError(err);
   if (!canEmbed) return { content: `⚠️ ${text}`.slice(0, 2000) };
   return { embeds: [new EmbedBuilder().setColor(COLORS.danger).setTitle('⚠️ AI chưa trả lời được').setDescription(text).setFooter({ text: 'Quản trị viên: /admin → 🩺 KIỂM TRA' })] };
+}
+
+/** Chuyển payload có embed → văn bản thường (dùng khi Discord từ chối embed / thiếu quyền Embed Links). */
+export function plainPayload(payload) {
+  const text = (payload.embeds || []).map(e => {
+    const d = e.toJSON ? e.toJSON() : e;
+    const fields = (d.fields || []).map(f => `**${f.name}**: ${String(f.value).replace(/```/g, '')}`).join('\n');
+    return [d.author?.name && `**${d.author.name}**`, d.title && `**${d.title}**`, d.description, fields, d.footer?.text && `*${d.footer.text}*`].filter(Boolean).join('\n');
+  }).join('\n\n');
+  return { content: truncate(text || payload.content || '…', 1990), components: payload.components || [] };
 }

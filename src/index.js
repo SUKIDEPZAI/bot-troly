@@ -5,14 +5,14 @@ import {
   ActivityType, ApplicationCommandOptionType, Client, GatewayIntentBits, InteractionContextType,
   MessageFlags, Partials, PermissionFlagsBits
 } from 'discord.js';
-import { closeDb, initDb, listProviders } from './db.js';
+import { closeDb, initDb, listProviders, pingDb } from './db.js';
 import { handleAdmin } from './admin.js';
 import { answer, limiterState } from './chat.js';
 import { syncAllProviders } from './catalog.js';
 import { clearHistory } from './history.js';
 import { isAdmin, interactionIsAdmin } from './permissions.js';
 import { channelAllowedBy, getSettings } from './settings.js';
-import { COLORS, VERSION, errorPayload, panel, providerLabel, providerStatus, renderAnswer } from './ui.js';
+import { COLORS, VERSION, errorPayload, panel, plainPayload, providerLabel, providerStatus, renderAnswer } from './ui.js';
 import { Cooldowns, csv, envInt, fmtDuration, fmtMs, stats, truncate } from './utils.js';
 
 for (const k of ['DISCORD_TOKEN', 'DATABASE_URL', 'AI_SECRET_KEY']) if (!process.env[k]) throw new Error(`Thiếu ${k}`);
@@ -57,19 +57,65 @@ function remember(data) {
 
 const displayName = (member, user) => truncate(member?.displayName || user.globalName || user.username, 32);
 const canEmbedIn = channel => channel?.permissionsFor?.(client.user)?.has(PermissionFlagsBits.EmbedLinks) ?? true;
+// Quyền thực của bot trong kênh nơi lệnh được dùng (interaction cung cấp sẵn appPermissions).
+const canEmbedInteraction = i => i.appPermissions?.has?.(PermissionFlagsBits.EmbedLinks) ?? true;
+const errId = () => crypto.randomBytes(3).toString('hex');
+
+/** editReply/followUp có fallback: nếu embed bị từ chối thì gửi lại dạng văn bản thường; lỗi cuối cùng được log (không nuốt). */
+async function safeSend(i, method, payload) {
+  try { return await i[method](payload); }
+  catch (err) {
+    console.warn(`⚠️ ${method} với embed thất bại (${err?.message || err}) → thử văn bản thường`);
+    try { return await i[method](plainPayload(payload)); }
+    catch (err2) { console.error(`❌ ${method} dạng văn bản cũng thất bại:`, err2?.message || err2); throw err2; }
+  }
+}
+async function failInteraction(i, err, canEmbed) {
+  stats.errors++;
+  console.error(`❌ /${i.commandName || 'button'} lỗi:`, err?.message || err);
+  await safeSend(i, 'editReply', errorPayload(err, { canEmbed })).catch(() => {});
+}
 const cleanPrompt = content => String(content || '').replace(new RegExp(`<@!?${client.user.id}>`, 'g'), ' ').replace(/\s+/g, ' ').trim();
+
+// Gửi: reply → (message gốc bị xóa) channel.send → (embed bị từ chối) văn bản thường. Lỗi cuối cùng được ném ra để log.
+async function sendToChannel(message, payload, asReply) {
+  const attempts = [
+    ...(asReply ? [p => message.reply(p)] : []),
+    p => message.channel.send(p)
+  ];
+  let lastErr;
+  for (const variant of [payload, plainPayload(payload)]) {
+    for (const send of attempts) {
+      try { return await send(variant); } catch (err) { lastErr = err; }
+    }
+  }
+  throw lastErr;
+}
 
 // ───────────────────────── Tin nhắn thường ─────────────────────────
 async function handleMessage(message) {
+  let notifyOnError = false;
+  try { await handleMessageInner(message, v => { notifyOnError = v; }); }
+  catch (err) {
+    stats.errors++;
+    console.error('❌ messageCreate:', err?.stack || err);
+    // Chỉ báo lỗi cho người đang gọi bot trực tiếp (@bot/reply) để không spam khi DB chập chờn.
+    if (notifyOnError) await message.reply(errorPayload(err, { canEmbed: canEmbedIn(message.channel) })).catch(() => {});
+  }
+}
+
+async function handleMessageInner(message, markDirect) {
   if (message.author.bot || message.webhookId || message.system || !message.guild) return;
   const raw = message.content || '';
   if (IGNORE_PREFIXES.some(p => raw.startsWith(p))) return;
+  const mentioned = message.mentions.users.has(client.user.id);
+  markDirect(mentioned);
   const settings = await getSettings();
   if (!channelAllowedBy(settings, message.channel)) return;
 
-  const mentioned = message.mentions.users.has(client.user.id);
   const refMsg = message.reference?.messageId ? await message.fetchReference().catch(() => null) : null;
   const repliedToBot = refMsg?.author?.id === client.user.id;
+  if (repliedToBot) markDirect(true);
   const prompt = cleanPrompt(raw);
   const canEmbed = canEmbedIn(message.channel);
   if (!prompt) {
@@ -94,68 +140,72 @@ async function handleMessage(message) {
   const userName = displayName(message.member, message.author);
   const referenced = refMsg ? (refMsg.content || refMsg.embeds?.[0]?.description || '') : '';
   try {
-    const result = await answer({ channelId: message.channelId, userName, text: prompt, referenced, council, settings, botName: BOT_NAME });
+    const result = await answer({ channelId: message.channelId, userId: message.author.id, userName, text: prompt, referenced, council, settings, botName: BOT_NAME });
     const token = remember({ text: prompt, referenced, userId: message.author.id, userName, channelId: message.channelId });
     const payloads = renderAnswer({ result, elapsedMs: Date.now() - started, canEmbed, requesterId: message.author.id, token });
-    for (let n = 0; n < payloads.length; n++) {
-      if (n === 0) await message.reply(payloads[n]).catch(() => message.channel.send(payloads[n]));
-      else await message.channel.send(payloads[n]);
-    }
+    for (let n = 0; n < payloads.length; n++) await sendToChannel(message, payloads[n], n === 0);
     console.log(`✅ ${result.mode.toUpperCase()} · ${message.guild.name} #${message.channel.name} · ${result.provider}/${result.model} · ${Date.now() - started}ms`);
   } catch (err) {
     stats.errors++;
     console.error('❌ AI chat error:', err?.message || err);
-    await message.reply(errorPayload(err, { canEmbed })).catch(() => message.channel.send(errorPayload(err, { canEmbed })).catch(() => {}));
+    await sendToChannel(message, errorPayload(err, { canEmbed }), true).catch(e => console.error('❌ Không gửi được cả thông báo lỗi:', e?.message || e));
   } finally { clearInterval(typing); }
 }
 
 // ───────────────────────── Slash commands ─────────────────────────
 async function sendInteractionPayloads(i, payloads) {
-  await i.editReply(payloads[0]);
-  for (const p of payloads.slice(1)) await i.followUp(p);
+  await safeSend(i, 'editReply', payloads[0]);
+  for (const p of payloads.slice(1)) await safeSend(i, 'followUp', p);
 }
 
 async function slashAsk(i) {
   const settings = await getSettings();
   if (!channelAllowedBy(settings, i.channel)) return i.reply({ content: '🔒 Bot không được bật trong kênh này.', flags: MessageFlags.Ephemeral });
+  const council = Boolean(i.options.getBoolean('hoi_dong')); // phải đọc TRƯỚC khi áp cooldown để dùng đúng COUNCIL_CD
   if (!interactionIsAdmin(i)) {
-    const wait = cooldowns.hit(i.user.id, USER_CD);
+    const wait = cooldowns.hit(i.user.id, council ? COUNCIL_CD : USER_CD);
     if (wait) { stats.ratelimited++; return i.reply({ content: `⏳ Chờ ${fmtMs(wait)} rồi hỏi tiếp nhé.`, flags: MessageFlags.Ephemeral }); }
   }
   await i.deferReply();
   stats.messages++;
   const started = Date.now();
   const text = i.options.getString('cau_hoi', true);
-  const council = Boolean(i.options.getBoolean('hoi_dong'));
+  const canEmbed = canEmbedInteraction(i);
   const userName = displayName(i.member, i.user);
   try {
-    const result = await answer({ channelId: i.channelId, userName, text, council, settings, botName: BOT_NAME });
+    const result = await answer({ channelId: i.channelId, userId: i.user.id, userName, text, council, settings, botName: BOT_NAME });
     const token = remember({ text, referenced: '', userId: i.user.id, userName, channelId: i.channelId });
-    await sendInteractionPayloads(i, renderAnswer({ result, elapsedMs: Date.now() - started, canEmbed: true, requesterId: i.user.id, token }));
+    await sendInteractionPayloads(i, renderAnswer({ result, elapsedMs: Date.now() - started, canEmbed, requesterId: i.user.id, token }));
   } catch (err) {
-    stats.errors++;
-    console.error('❌ /ask:', err?.message || err);
-    await i.editReply(errorPayload(err)).catch(() => {});
+    await failInteraction(i, err, canEmbed);
   }
 }
 
 async function slashStatus(i) {
-  const ps = await listProviders().catch(() => []);
-  const lim = limiterState();
-  const lines = ps.length
-    ? ps.map(p => { const st = providerStatus(p); return `${st.icon} **${providerLabel(p.name)}** — ${st.text}`; }).join('\n')
-    : '_Chưa cấu hình AI nào._';
-  return i.reply({
-    embeds: [panel({
+  const canEmbed = canEmbedInteraction(i);
+  let payload;
+  try {
+    const ps = await listProviders();
+    const lim = limiterState();
+    const lines = ps.length
+      ? ps.map(p => { const st = providerStatus(p); return `${st.icon} **${providerLabel(p.name)}** — ${st.text}`; }).join('\n')
+      : '_Chưa cấu hình AI nào._';
+    payload = { embeds: [panel({
       title: `📡 TÌNH TRẠNG ${BOT_NAME.toUpperCase()}`, description: lines, color: COLORS.primary,
       fields: [
         { name: '⏱ Uptime', value: fmtDuration((Date.now() - stats.startedAt) / 1000), inline: true },
         { name: '🏓 Ping', value: `${Math.round(client.ws.ping)}ms`, inline: true },
-        { name: '⚙️ Hàng đợi', value: `${lim.active} chạy · ${lim.waiting} chờ`, inline: true }
+        { name: '⚙️ Hàng đợi', value: `${lim.active} chạy · ${lim.waiting} chờ`, inline: true },
+        { name: '🗄 Cơ sở dữ liệu', value: health.db ? '🟢 Kết nối tốt' : '🔴 Mất kết nối', inline: true }
       ],
       footer: `v${VERSION} · nhắn bình thường để trò chuyện · @bot để hỏi Hội đồng`
-    })]
-  });
+    })] };
+  } catch (err) {
+    console.error('❌ /status — DB lỗi:', err?.message || err);
+    payload = { embeds: [panel({ title: '📡 TÌNH TRẠNG', color: COLORS.danger, description: '🔴 **Không đọc được cơ sở dữ liệu.** Bot vẫn chạy nhưng cấu hình AI tạm thời không truy cập được — quản trị viên hãy kiểm tra PostgreSQL.' })] };
+  }
+  if (!canEmbed) payload = plainPayload(payload);
+  return safeSend(i, 'reply', payload);
 }
 
 async function handleChatInput(i) {
@@ -164,7 +214,7 @@ async function handleChatInput(i) {
     case 'ask': return slashAsk(i);
     case 'status': return slashStatus(i);
     case 'clear': {
-      clearHistory(i.channelId);
+      clearHistory(i.channelId, i.user.id);
       return i.reply({ content: '🧹 Đã xóa trí nhớ hội thoại của kênh này.', flags: MessageFlags.Ephemeral });
     }
     default: return undefined;
@@ -190,17 +240,19 @@ async function handleAnswerButton(i) {
     }
     await i.deferReply();
     const started = Date.now();
+    const canEmbed = canEmbedInteraction(i);
     try {
       const settings = await getSettings();
-      const result = await answer({ channelId: data.channelId, userName: data.userName, text: data.text, referenced: data.referenced, council: true, settings, botName: BOT_NAME, skipHistory: true });
+      const result = await answer({ channelId: data.channelId, userId: data.userId, userName: data.userName, text: data.text, referenced: data.referenced, council: true, settings, botName: BOT_NAME, skipHistory: true });
       const token = remember(data);
-      await sendInteractionPayloads(i, renderAnswer({ result, elapsedMs: Date.now() - started, canEmbed: true, requesterId: data.userId, token }));
+      await sendInteractionPayloads(i, renderAnswer({ result, elapsedMs: Date.now() - started, canEmbed, requesterId: data.userId, token }));
     } catch (err) {
-      stats.errors++;
-      console.error('❌ regen:', err?.message || err);
-      await i.editReply(errorPayload(err)).catch(() => {});
+      await failInteraction(i, err, canEmbed);
     }
+    return;
   }
+  // customId ans_* không nhận diện được (nút cũ/phiên bản khác) → luôn phản hồi để Discord không báo "interaction failed".
+  return i.reply({ content: '⌛ Nút này không còn hiệu lực.', flags: MessageFlags.Ephemeral });
 }
 
 client.on('interactionCreate', async i => {
@@ -210,8 +262,9 @@ client.on('interactionCreate', async i => {
     if (id.startsWith('adm_')) return await handleAdmin(i);
     if (i.isButton() && id.startsWith('ans_')) return await handleAnswerButton(i);
   } catch (err) {
-    console.error('❌ interactionCreate:', err?.stack || err);
-    const msg = { content: '❌ Có lỗi xảy ra, thử lại sau nhé.', flags: MessageFlags.Ephemeral };
+    const id = errId();
+    console.error(`❌ interactionCreate [${id}] ${i.commandName || i.customId || ''}:`, err?.stack || err);
+    const msg = { content: `❌ Có lỗi xảy ra, thử lại sau nhé. (mã lỗi: \`${id}\` — quản trị viên tra log theo mã này)`, flags: MessageFlags.Ephemeral };
     if (i.deferred || i.replied) await i.followUp(msg).catch(() => {});
     else await i.reply(msg).catch(() => {});
   }
@@ -219,7 +272,7 @@ client.on('interactionCreate', async i => {
 
 client.on('error', err => console.error('❌ Discord client error:', err?.stack || err));
 client.on('warn', msg => console.warn('⚠️ Discord warning:', msg));
-client.on('messageCreate', m => handleMessage(m).catch(err => { stats.errors++; console.error('❌ messageCreate:', err?.stack || err); }));
+client.on('messageCreate', m => { handleMessage(m); });
 
 client.once('clientReady', async () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
@@ -227,15 +280,22 @@ client.once('clientReady', async () => {
   try { await client.application.commands.set(COMMANDS); console.log('✅ Slash commands: /admin /ask /status /clear'); }
   catch (err) { console.error('❌ Đăng ký slash command thất bại:', err); }
   getSettings(true).catch(err => console.error('❌ Không tải được cấu hình:', err));
-  syncAllProviders().then(n => n && console.log(`✅ Đã đồng bộ ${n} model từ API`)).catch(() => {});
+  syncAllProviders().then(n => console.log(n ? `✅ Đã đồng bộ ${n} model từ API` : 'ℹ️ Không có model mới để đồng bộ (chưa có API hoặc provider đang lỗi).')).catch(err => console.error('❌ Đồng bộ catalog khi khởi động thất bại:', err?.message || err));
 });
 
 // ───────────────────────── Health server + vòng đời ─────────────────────────
+const health = { db: false, dbFails: 0 };
+async function checkDb() {
+  try { await pingDb(); health.db = true; health.dbFails = 0; }
+  catch (err) { health.dbFails++; if (health.dbFails >= 2) health.db = false; console.warn(`⚠️ DB ping lỗi (${health.dbFails}):`, err?.message || err); }
+}
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
 const server = http.createServer((req, res) => {
   const path = String(req.url || '').split('?')[0];
-  if (path === '/health') return json(res, 200, { ok: true, botReady: client.isReady(), uptime: Math.round(process.uptime()), version: VERSION, messages: stats.messages });
-  if (path === '/ready') { const ok = client.isReady(); return json(res, ok ? 200 : 503, { ok, botReady: ok }); }
+  const ready = client.isReady() && health.db;
+  const body = { ok: ready, botReady: client.isReady(), db: health.db, uptime: Math.round(process.uptime()), version: VERSION, messages: stats.messages };
+  if (path === '/live') return json(res, 200, { ok: true });                // tiến trình còn sống
+  if (path === '/health' || path === '/ready') return json(res, ready ? 200 : 503, body); // sẵn sàng thật: Discord + PostgreSQL
   return json(res, 404, { error: 'Not found' });
 });
 
@@ -265,5 +325,7 @@ for (let attempt = 1; ; attempt++) {
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
 }
+await checkDb();
+setInterval(checkDb, 30_000).unref();
 try { await client.login(process.env.DISCORD_TOKEN); }
 catch (err) { console.error('❌ Discord login failed:', err); process.exit(1); }
