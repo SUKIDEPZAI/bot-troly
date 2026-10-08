@@ -1,7 +1,9 @@
 FROM node:22-bookworm-slim
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev
-COPY . .
 ENV NODE_ENV=production
-CMD ["node","src/index.js"]
+COPY package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY src ./src
+USER node
+EXPOSE 10000
+CMD ["node", "src/index.js"]

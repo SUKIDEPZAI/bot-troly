@@ -27,6 +27,14 @@ services:
         value: ""
       - key: PORT
         value: "10000"
+      - key: BOT_NAME
+        value: AI Council
+      - key: USER_COOLDOWN_MS
+        value: "4000"
+      - key: COUNCIL_COOLDOWN_MS
+        value: "12000"
+      - key: MAX_CONCURRENT_AI
+        value: "4"
 databases:
   - name: discord-ai-db
     plan: free
