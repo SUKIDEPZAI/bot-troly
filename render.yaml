@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: discord-ai-council
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: discord-ai-db
+          property: connectionString
+      - key: PGSSL
+        value: "true"
+      - key: AI_SECRET_KEY
+        sync: false
+      - key: MOTAPIS_API_KEY
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: ADMIN_ROLE_IDS
+        sync: false
+      - key: DEFAULT_PROVIDER
+        value: motapis
+      - key: DEFAULT_MODEL
+        value: ""
+      - key: PORT
+        value: "10000"
+databases:
+  - name: discord-ai-db
+    plan: free
