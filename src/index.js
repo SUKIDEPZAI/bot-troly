@@ -6,7 +6,6 @@ import {
   recordProviderSuccess, setSetting, upsertProvider
 } from './db.js';
 import { registerAdmin } from './admin.js';
-import { handleNaturalAdminMessage, registerDiscordAdminInteractions } from './discord-admin.js';
 import { MOTAPIS_MODELS, PROVIDERS, chat, isTransientError, listRemoteModels, suggestedModels } from './providers.js';
 
 const PORT=Number(process.env.PORT||10000);
@@ -232,12 +231,10 @@ async function councilChat(prompt,settings){
 
 async function handleMessage(message){
   if(message.author.bot||!message.guild)return;
-  // Admin có thể yêu cầu quản trị bằng chat bình thường, kể cả khi khóa kênh chat AI.
-  if(await handleNaturalAdminMessage(message))return;
   if(!(await channelAllowed(message.channelId)))return;
   const mentioned=client.user ? message.mentions.users.has(client.user.id) : false;
   const repliedToBot=message.reference?.messageId ? await message.fetchReference().then(m=>m.author?.id===client.user.id).catch(()=>false) : false;
-  // Trong các kênh đã khóa/cho phép: nhắn bình thường là đủ. @bot/reply bot sẽ kích hoạt Council.
+  // Tin nhắn thường được xử lý không cần mention; @bot/reply bot kích hoạt Council.
   const prompt=cleanPrompt(message);
   if(!prompt){if(mentioned||repliedToBot)await message.reply({content:'👋 Hãy nhập nội dung bạn muốn mình trả lời.',allowedMentions:{repliedUser:false}});return;}
 
@@ -260,7 +257,7 @@ ${String(err?.message||err).slice(0,900)}\n\nNếu bạn vừa đổi API key, h
 }
 
 const server=http.createServer((req,res)=>{
-  if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok:true,botReady:client.isReady(),uptime:Math.round(process.uptime()),version:'12.8'}));return;}
+  if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok:true,botReady:client.isReady(),uptime:Math.round(process.uptime()),version:'12.8.2'}));return;}
   if(req.url==='/ready'){const ok=client.isReady();res.writeHead(ok?200:503,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok,botReady:ok}));return;}
   res.writeHead(404,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify({error:'Not found'}));
 });
@@ -275,7 +272,6 @@ client.once('clientReady',async()=>{
   console.log(`✅ Bot online: ${client.user.tag}`);
   await loadSettings(true).catch(err=>console.error('❌ Không tải được cấu hình:',err));
   await loadRoute(true).catch(err=>console.error('❌ Không tải được routing state:',err));
-  registerDiscordAdminInteractions(client);
   try{await registerAdmin(client);console.log('✅ /admin đã sẵn sàng');}
   catch(err){console.error('❌ Đăng ký /admin thất bại:',err);}
 });

@@ -1,4 +1,4 @@
-# Discord AI Council v12.8 — Admin Chat + Model Controls
+# Discord AI Council v12.8.2 — Only /admin + Normal Chat Replies
 
 Bản này xây trên v12.7/Motapis. Nó giữ PostgreSQL hiện tại, không cần reset database. API key vẫn nằm trong Render Environment; tuyệt đối không gửi key vào Discord/GitHub.
 
@@ -54,52 +54,11 @@ Quản trị viên con người phải có quyền **Administrator** trong serve
 
 Nếu tắt tất cả model, bot không còn model AI nào để trả lời; hãy bật ít nhất một model. Model ID đã được khai báo trong bản này chưa đảm bảo tài khoản Motapis có quyền gọi model đó — quyền thật chỉ xác nhận được bằng API của gateway.
 
-## 5. Quản trị Discord bằng chat bình thường
+## 5. Lệnh và chat thông thường
 
-Trong server, admin chỉ cần gửi một câu tự nhiên; không cần slash command cho các tác vụ dưới đây. Hệ thống gửi câu quản trị qua model Motapis để phân loại intent, đồng thời có parser dự phòng cho câu lệnh thông dụng, tiếng Việt không dấu, từ viết tắt và một số lỗi chính tả. Các hành động phá hủy/yếu tố rủi ro sẽ yêu cầu bấm **Xác nhận thực hiện**; chỉ người đã tạo yêu cầu có thể xác nhận, nút hết hạn sau 2 phút.
+Bot chỉ đăng ký một slash command là `/admin`. Trong các kênh được phép, người dùng có thể nhắn tin bình thường và bot tự trả lời bằng AI **không cần @mention**. Khi @bot hoặc reply vào bot, hệ thống có thể dùng chế độ Hội đồng nhiều AI nếu bật trong `/admin`.
 
-### Kênh và tin nhắn
-
-- `khóa kênh này` / `mở khóa kênh này`
-- `đổi tên kênh này thành thong-bao`
-- `đặt topic kênh này thành Thông báo chính thức`
-- `đặt slowmode 5 giây` / `tắt slowmode`
-- `tạo kênh text thong-bao`
-- `tạo kênh thoại Họp nhóm`
-- `tạo category Cộng đồng`
-- `xóa kênh #kenh-cu` — cần xác nhận
-- `dọn 10 tin nhắn gần nhất` — cần xác nhận; Discord không cho bulk-delete tin cũ hơn 14 ngày
-- `liệt kê kênh trong server`
-
-Nếu câu nhắc một kênh cụ thể, hãy tag kênh bằng `#kênh`; nếu không, thao tác kênh thường áp dụng cho kênh hiện tại.
-
-### Thành viên và kiểm duyệt
-
-- `timeout @thanhvien 10 phút vì spam`
-- `gỡ timeout @thanhvien`
-- `kick @thanhvien vì spam` — cần xác nhận
-- `ban @thanhvien vì phá hoại` — cần xác nhận
-- `unban 123456789012345678` — cần Discord user ID dạng số
-- `đổi nickname @thanhvien thành Người mới`
-- `cảnh cáo @thanhvien vì spam link`
-- `xem cảnh cáo @thanhvien`
-- `xóa cảnh cáo @thanhvien` — cần xác nhận
-- `thông tin thành viên @thanhvien`
-
-Cảnh cáo do bot ghi vào PostgreSQL và sẽ còn sau khi Render restart. Đây là nhật ký riêng của bot; nó không tự tạo bản ghi cảnh cáo trong hệ thống Discord gốc.
-
-### Role và server
-
-- `tạo role VIP`
-- `gán role VIP cho @thanhvien`
-- `gỡ role VIP khỏi @thanhvien`
-- `xóa role VIP` — cần xác nhận
-- `liệt kê role`
-- `thông tin server`
-- `xem audit log 10`
-- `đổi tên server thành Tên mới` — cần xác nhận
-
-Role/tag thành viên nên được mention rõ ràng nếu có người/role trùng tên. Bot không thể quản lý chủ server, role được tích hợp, hoặc thành viên/role ngang cao hơn role cao nhất của bot.
+Các thao tác cấu hình AI, model, khóa kênh và định tuyến được thực hiện trong bảng `/admin`. Bản này không xử lý các câu chat như `ban @user` hay `xóa kênh` thành lệnh quản trị, nhằm tránh bot hiểu nhầm tin nhắn thông thường là hành động quản trị.
 
 ## 6. Phạm vi và giới hạn
 
@@ -117,6 +76,11 @@ npm run check
 
 Sau deploy, xem Render Logs để tìm `✅ Bot online`, `✅ /admin đã sẵn sàng` và lỗi `❌`. Thử quản trị bằng admin trước; nếu Discord trả `Missing Permissions`, cấp đúng quyền và chỉnh role hierarchy. Không xóa PostgreSQL để xử lý lỗi triển khai.
 
+
+## v12.8.2: chỉ /admin + trả lời chat thường
+- Chỉ đăng ký slash command `/admin`; tin nhắn thường không cần mention vẫn được định tuyến đến AI.
+- Gỡ bộ nhận diện lệnh quản trị bằng câu chat để tránh chặn/hiểu nhầm tin nhắn bình thường.
+- Vẫn giữ bộ lọc kênh và chế độ Council khi @bot/reply.
 
 ## v12.8.1 hotfix: Render schema migration
 Nếu log Render báo `column updated_at of relation ai_settings does not exist`, hãy cập nhật source v12.8.1 và redeploy. Migration tự thêm cột còn thiếu và điền timestamp cho hàng cũ; không xóa bảng hoặc dữ liệu.

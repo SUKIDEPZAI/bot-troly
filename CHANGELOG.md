@@ -12,3 +12,8 @@
 ## v12.8.1 — Render PostgreSQL migration fix
 - Adds `ai_settings.updated_at` with an idempotent migration before any setting writes.
 - Backfills missing timestamps in existing rows; preserves current settings and PostgreSQL data.
+
+## v12.8.2 — Only /admin + ordinary chat
+- Kept `/admin` as the only slash command registered by the bot.
+- Removed natural-language moderation interception from the message pipeline so ordinary chat is routed to AI without requiring a mention.
+- Preserved channel allow-list, AI routing, and optional council mode on mention/reply.
