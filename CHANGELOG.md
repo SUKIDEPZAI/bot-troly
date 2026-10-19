@@ -8,3 +8,7 @@
 - Added PostgreSQL-backed moderation warning records with automatic table/index creation.
 - Added required Server Members intent to support member lookup by name.
 - Updated Render environment mapping and README setup guide.
+
+## v12.8.1 — Render PostgreSQL migration fix
+- Adds `ai_settings.updated_at` with an idempotent migration before any setting writes.
+- Backfills missing timestamps in existing rows; preserves current settings and PostgreSQL data.

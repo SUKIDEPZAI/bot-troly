@@ -58,6 +58,11 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS discord_mod_logs_user_idx ON discord_mod_logs(guild_id,user_id,action,created_at DESC);
   `);
 
+  // Migrate bảng settings từ các schema cũ; setSetting() yêu cầu updated_at.
+  // Chạy trước mọi INSERT/UPDATE setting để tránh crash lúc khởi động.
+  await pool.query(`ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
+  await pool.query(`UPDATE ai_settings SET updated_at=NOW() WHERE updated_at IS NULL`);
+
   // Migrations: giữ nguyên PostgreSQL cũ, không xóa dữ liệu.
   await pool.query(`ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS base_url TEXT`);
   await pool.query(`ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT`);

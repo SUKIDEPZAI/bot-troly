@@ -116,3 +116,7 @@ npm run check
 ```
 
 Sau deploy, xem Render Logs để tìm `✅ Bot online`, `✅ /admin đã sẵn sàng` và lỗi `❌`. Thử quản trị bằng admin trước; nếu Discord trả `Missing Permissions`, cấp đúng quyền và chỉnh role hierarchy. Không xóa PostgreSQL để xử lý lỗi triển khai.
+
+
+## v12.8.1 hotfix: Render schema migration
+Nếu log Render báo `column updated_at of relation ai_settings does not exist`, hãy cập nhật source v12.8.1 và redeploy. Migration tự thêm cột còn thiếu và điền timestamp cho hàng cũ; không xóa bảng hoặc dữ liệu.
