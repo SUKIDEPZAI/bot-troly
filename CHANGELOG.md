@@ -1,3 +1,9 @@
+## v12.8.3 — Responsiveness and startup fixes
+- Catch failures in the entire message-processing path and send a visible diagnostic instead of only logging.
+- Start the lightweight Render liveness endpoint before PostgreSQL migrations; `/ready` still reports whether Discord is connected.
+- Honor per-call AI timeout values, including the shorter Council timeout.
+- Prevent duplicate processing of the same Discord message and start typing feedback before model work.
+
 # v12.8
 
 - Added `/admin → AI & MODEL` screen that was missing from the v12.7 source.

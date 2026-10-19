@@ -153,7 +153,7 @@ function cleanPrompt(message){
 
 function trimForContext(text,max=10000){return String(text||'').length>max?String(text).slice(-max):String(text||'');}
 
-async function oneCall(candidate,prompt,{maxTokens=1000}={}){
+async function oneCall(candidate,prompt,{maxTokens=1000,timeoutMs=10000}={}){
   const started=Date.now();
   try{
     const result=await chat({
@@ -161,7 +161,7 @@ async function oneCall(candidate,prompt,{maxTokens=1000}={}){
       messages:[
         {role:'system',content:'Bạn là trợ lý Discord. Trả lời bằng tiếng Việt khi người dùng viết tiếng Việt. Tự giải quyết yêu cầu; không yêu cầu người dùng cấu hình API/model nếu hệ thống đã cung cấp model. Không nói mình là bot đang chờ chỉnh kết nối trừ khi API thực sự thất bại.'},
         {role:'user',content:trimForContext(prompt)}
-      ],temperature:.65,maxTokens,timeoutMs:10000
+      ],temperature:.65,maxTokens,timeoutMs
     });
     await recordProviderSuccess(candidate.provider,result.latencyMs||Date.now()-started);
     return {...result,provider:candidate.provider,model:candidate.model};
@@ -229,35 +229,61 @@ async function councilChat(prompt,settings){
   return {answer:{...best,text:`${best.text}\n\n_🧠 Hội đồng đã tham khảo: ${used} · chọn câu trả lời tốt nhất._`},difficulty:difficulty(prompt),candidatesTried:answers.length};
 }
 
+const processingMessages=new Set();
+
 async function handleMessage(message){
   if(message.author.bot||!message.guild)return;
-  if(!(await channelAllowed(message.channelId)))return;
-  const mentioned=client.user ? message.mentions.users.has(client.user.id) : false;
-  const repliedToBot=message.reference?.messageId ? await message.fetchReference().then(m=>m.author?.id===client.user.id).catch(()=>false) : false;
-  // Tin nhắn thường được xử lý không cần mention; @bot/reply bot kích hoạt Council.
-  const prompt=cleanPrompt(message);
-  if(!prompt){if(mentioned||repliedToBot)await message.reply({content:'👋 Hãy nhập nội dung bạn muốn mình trả lời.',allowedMentions:{repliedUser:false}});return;}
-
-  const settings=await loadSettings();
-  await message.channel.sendTyping().catch(()=>{});
-  const started=Date.now();
+  if(processingMessages.has(message.id))return;
+  processingMessages.add(message.id);
   try{
-    const result=(mentioned||repliedToBot) ? await councilChat(prompt,settings) : await routedChat(prompt,settings);
-    const label=mentioned||repliedToBot?'🧠':'🤖';
-    const header=`${label} ${result.difficulty.name} · ${Date.now()-started}ms`;
-    const text=`${header}\n\n${result.answer.text}`.slice(0,1900);
-    await message.reply({content:text,allowedMentions:{repliedUser:false}}).catch(()=>message.channel.send(text));
-    console.log(`✅ Chat ${mentioned?'COUNCIL':'AUTO'} · ${message.guild.name} #${message.channel.name} · ${Date.now()-started}ms`);
+    if(!(await channelAllowed(message.channelId)))return;
+    // Show activity before database/model work so the bot does not look unresponsive.
+    await message.channel.sendTyping().catch(()=>{});
+    const mentioned=client.user ? message.mentions.users.has(client.user.id) : false;
+    const repliedToBot=message.reference?.messageId
+      ? await message.fetchReference().then(m=>m.author?.id===client.user.id).catch(()=>false)
+      : false;
+    const prompt=cleanPrompt(message);
+    if(!prompt){
+      if(mentioned||repliedToBot) await message.reply({content:'👋 Hãy nhập nội dung bạn muốn mình trả lời.',allowedMentions:{repliedUser:false}});
+      return;
+    }
+
+    const settings=await loadSettings();
+    const started=Date.now();
+    try{
+      const result=(mentioned||repliedToBot)
+        ? await councilChat(prompt,settings)
+        : await routedChat(prompt,settings);
+      const label=mentioned||repliedToBot?'🧠':'🤖';
+      const header=`${label} ${result.difficulty.name} · ${Date.now()-started}ms`;
+      const text=`${header}\n\n${result.answer.text}`.slice(0,1900);
+      try{
+        await message.reply({content:text,allowedMentions:{repliedUser:false}});
+      }catch(replyError){
+        console.error('❌ Reply failed, trying channel.send:',replyError?.message||replyError);
+        await message.channel.send({content:text,allowedMentions:{repliedUser:false}});
+      }
+      console.log(`✅ Chat ${mentioned||repliedToBot?'COUNCIL':'AUTO'} · ${message.guild.name} #${message.channel.name} · ${Date.now()-started}ms`);
+    }catch(err){
+      console.error('❌ AI chat error:',err?.stack||err);
+      const fallback=`⚠️ AI chưa trả lời được. Hệ thống đã thử tuyến AI nhưng gặp lỗi.\n\n${String(err?.message||err).slice(0,900)}\n\nKiểm tra Render Logs, MOTAPIS_API_KEY và ít nhất một model đang bật trong /admin.`;
+      await message.reply({content:fallback,allowedMentions:{repliedUser:false}}).catch(async()=>{
+        await message.channel.send({content:fallback,allowedMentions:{repliedUser:false}}).catch(()=>{});
+      });
+    }
   }catch(err){
-    console.error('❌ AI chat error:',err?.stack||err);
-    const fallback=`⚠️ AI chưa trả lời được. Mình đã tự kiểm tra API/model và thử tuyến dự phòng.\n
-${String(err?.message||err).slice(0,900)}\n\nNếu bạn vừa đổi API key, hãy dùng /admin → API → Kiểm tra tất cả API; không cần nhập lại model nếu model vẫn hiện trong danh sách.`;
-    await message.reply({content:fallback,allowedMentions:{repliedUser:false}}).catch(()=>{});
+    // Previously, DB/cache failures before the AI try/catch were only logged, with no visible reply.
+    console.error('❌ Message processing failed:',err?.stack||err);
+    const notice='⚠️ Bot gặp lỗi khi tiếp nhận tin nhắn (cơ sở dữ liệu hoặc cấu hình). Hãy thử lại sau ít giây; quản trị viên kiểm tra Render Logs.';
+    await message.reply({content:notice,allowedMentions:{repliedUser:false}}).catch(()=>{});
+  }finally{
+    processingMessages.delete(message.id);
   }
 }
 
 const server=http.createServer((req,res)=>{
-  if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok:true,botReady:client.isReady(),uptime:Math.round(process.uptime()),version:'12.8.2'}));return;}
+  if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok:true,botReady:client.isReady(),uptime:Math.round(process.uptime()),version:'12.8.3'}));return;}
   if(req.url==='/ready'){const ok=client.isReady();res.writeHead(ok?200:503,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify({ok,botReady:ok}));return;}
   res.writeHead(404,{'content-type':'application/json; charset=utf-8'});res.end(JSON.stringify({error:'Not found'}));
 });
@@ -276,6 +302,9 @@ client.once('clientReady',async()=>{
   catch(err){console.error('❌ Đăng ký /admin thất bại:',err);}
 });
 
+// Start liveness endpoint before database migrations; /ready reports Discord readiness separately.
+server.listen(PORT,'0.0.0.0',()=>console.log(`🌐 Health server listening on ${PORT}`));
+
 await initDb();
 if (process.env.MOTAPIS_API_KEY?.trim()) {
   await upsertProvider({name:'motapis',apiKey:process.env.MOTAPIS_API_KEY.trim(),baseUrl:'https://motapis.com/v1'});
@@ -288,7 +317,6 @@ if (process.env.MOTAPIS_API_KEY?.trim()) {
 } else {
   console.warn('⚠️ MOTAPIS_API_KEY chưa được đặt trong Render Environment.');
 }
-server.listen(PORT,'0.0.0.0',()=>console.log(`🌐 Health server listening on ${PORT}`));
 try{await client.login(process.env.DISCORD_TOKEN);}catch(err){console.error('❌ Discord login failed:',err);process.exit(1);}
 
 // Giữ tương thích với code cũ.
